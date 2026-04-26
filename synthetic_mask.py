@@ -1,3 +1,5 @@
+import torch
+
 def generate_synthetic_mask(
     n_frames: int,
     min_run: int = 1,

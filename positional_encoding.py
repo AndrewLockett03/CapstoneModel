@@ -1,3 +1,6 @@
+import torch
+import torch.nn as nn
+
 class PositionalEncoding(nn.Module):
     """
     Standard sinusoidal positional encoding.

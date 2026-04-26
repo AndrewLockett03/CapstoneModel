@@ -1,3 +1,7 @@
+import torch
+import torch.nn.functional as F
+
+
 def inpainting_loss(
     predictions: torch.Tensor,   # (batch, n_frames, n_bins)
     targets: torch.Tensor,        # (batch, n_frames, n_bins)

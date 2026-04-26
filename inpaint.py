@@ -1,3 +1,8 @@
+from spectrogram_inpainter import SpectrogramInpainter
+import torch
+from model_config import ModelConfig
+
+
 def inpaint(
     model: SpectrogramInpainter,
     log_magnitude: torch.Tensor,    # (n_frames, n_bins)  full file or chunk

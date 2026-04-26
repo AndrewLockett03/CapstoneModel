@@ -1,3 +1,8 @@
+import torch
+import torch.nn as nn
+from model_config import ModelConfig
+from positional_encoding import PositionalEncoding
+
 class SpectrogramInpainter(nn.Module):
     """
     Masked autoencoder-style transformer for log-magnitude spectrogram inpainting.
