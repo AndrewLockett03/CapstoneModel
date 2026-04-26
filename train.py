@@ -12,11 +12,10 @@ from inpainting_loss import inpainting_loss
 
 
 # ---------------------------------------------------------------------------
-# Normalisation stats helper (optional — for tracking across an epoch)
+# Training loop (unchanged interface, updated semantics)
 # ---------------------------------------------------------------------------
 
 class RunningStats:
-    """Accumulates mean and std of a scalar quantity over batches."""
     def __init__(self):
         self.reset()
 
@@ -33,20 +32,16 @@ class RunningStats:
         return self.total / max(self.count, 1)
 
 
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
-
 def train(
-    model:        SpectrogramInpainter,
-    stft_config:  STFTConfig,
-    model_config: ModelConfig,
-    wav_dir:      str,
-    n_epochs:     int   = 50,
-    batch_size:   int   = 32,
-    lr:           float = 3e-4,
-    checkpoint_dir: str = './checkpoints',
-    resume_from:  str   = None,        # path to a checkpoint to resume from
+    model:          SpectrogramInpainter,
+    stft_config:    STFTConfig,
+    model_config:   ModelConfig,
+    wav_dir:        str,
+    n_epochs:       int   = 50,
+    batch_size:     int   = 32,
+    lr:             float = 3e-4,
+    checkpoint_dir: str   = './checkpoints',
+    resume_from:    str   = None,
 ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on {device}")
@@ -54,29 +49,26 @@ def train(
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # --- Data ---
     train_dataset = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='train')
     val_dataset   = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='val')
 
-    train_loader  = DataLoader(
+    train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=2, pin_memory=True, drop_last=True,
     )
-    val_loader    = DataLoader(
+    val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
         num_workers=2, pin_memory=True, drop_last=False,
     )
 
     print(f"Train files: {len(train_dataset)}  |  Val files: {len(val_dataset)}")
 
-    # --- Optimiser & scheduler ---
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr * 0.01)
 
-    start_epoch  = 0
+    start_epoch   = 0
     best_val_loss = float('inf')
 
-    # --- Optional resume ---
     if resume_from and os.path.isfile(resume_from):
         checkpoint = torch.load(resume_from, map_location=device)
         model.load_state_dict(checkpoint['model'])
@@ -86,35 +78,39 @@ def train(
         best_val_loss = checkpoint['best_val_loss']
         print(f"Resumed from epoch {start_epoch}, best val loss {best_val_loss:.4f}")
 
-    # --- Epoch loop ---
     for epoch in range(start_epoch, n_epochs):
         model.train()
         train_stats = RunningStats()
 
-        for batch_idx, (frames, mask, target) in enumerate(train_loader):
-            frames  = frames.to(device)   # (B, ctx, n_bins)
-            mask    = mask.to(device)     # (B, ctx)
-            target  = target.to(device)   # (B, ctx, n_bins)
+        for batch_idx, (clipped_frames, mask, clean_frames) in enumerate(train_loader):
+            # clipped_frames: (B, ctx, n_bins) — distorted input to the model
+            # mask:           (B, ctx)          — True where clipping was detected
+            # clean_frames:   (B, ctx, n_bins)  — reconstruction target
+            clipped_frames = clipped_frames.to(device)
+            mask           = mask.to(device)
+            clean_frames   = clean_frames.to(device)
 
             optimizer.zero_grad()
-            predictions = model(frames, mask)               # (B, ctx, n_bins)
-            loss = inpainting_loss(predictions, target, mask)
+            predictions = model(clipped_frames, mask)
+
+            # Loss is between model output and CLEAN frames at masked positions only
+            loss = inpainting_loss(predictions, clean_frames, mask)
             loss.backward()
 
-            # Gradient clipping — important for transformer stability
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
             optimizer.step()
             train_stats.update(loss.item())
 
             if batch_idx % 50 == 0:
+                # Report what fraction of frames in this batch were masked
+                mask_rate = mask.float().mean().item()
                 print(
                     f"Epoch {epoch+1}/{n_epochs} "
                     f"| Batch {batch_idx}/{len(train_loader)} "
-                    f"| Loss {loss.item():.4f}"
+                    f"| Loss {loss.item():.4f} "
+                    f"| Mask rate {mask_rate:.3f}"
                 )
 
-        # --- Validation ---
         val_loss = _validate(model, val_loader, device)
         scheduler.step()
 
@@ -125,21 +121,17 @@ def train(
             f"| LR {scheduler.get_last_lr()[0]:.2e}"
         )
 
-        # --- Checkpointing ---
         checkpoint = {
-            'epoch':          epoch,
-            'model':          model.state_dict(),
-            'optimizer':      optimizer.state_dict(),
-            'scheduler':      scheduler.state_dict(),
-            'best_val_loss':  best_val_loss,
-            'model_config':   model_config,
-            'stft_config':    stft_config,
+            'epoch':         epoch,
+            'model':         model.state_dict(),
+            'optimizer':     optimizer.state_dict(),
+            'scheduler':     scheduler.state_dict(),
+            'best_val_loss': best_val_loss,
+            'model_config':  model_config,
+            'stft_config':   stft_config,
         }
-
-        # Always save latest
         torch.save(checkpoint, os.path.join(checkpoint_dir, 'latest.pt'))
 
-        # Save best
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint['best_val_loss'] = best_val_loss
@@ -156,13 +148,13 @@ def _validate(
     model.eval()
     stats = RunningStats()
 
-    for frames, mask, target in val_loader:
-        frames  = frames.to(device)
-        mask    = mask.to(device)
-        target  = target.to(device)
+    for clipped_frames, mask, clean_frames in val_loader:
+        clipped_frames = clipped_frames.to(device)
+        mask           = mask.to(device)
+        clean_frames   = clean_frames.to(device)
 
-        predictions = model(frames, mask)
-        loss = inpainting_loss(predictions, target, mask)
+        predictions = model(clipped_frames, mask)
+        loss = inpainting_loss(predictions, clean_frames, mask)
         stats.update(loss.item())
 
     return stats.mean
