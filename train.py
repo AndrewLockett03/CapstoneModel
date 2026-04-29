@@ -9,6 +9,7 @@ from STFT import STFTConfig
 from model_config import ModelConfig
 from dataset import VCTKInpaintingDataset
 from inpainting_loss import inpainting_loss
+from preprocess_dataset import preprocess_dataset
 
 
 # ---------------------------------------------------------------------------
@@ -33,15 +34,15 @@ class RunningStats:
 
 
 def train(
-    model:          SpectrogramInpainter,
-    stft_config:    STFTConfig,
-    model_config:   ModelConfig,
-    wav_dir:        str,
-    n_epochs:       int   = 50,
-    batch_size:     int   = 32,
-    lr:             float = 3e-4,
-    checkpoint_dir: str   = './checkpoints',
-    resume_from:    str   = None,
+    model:            SpectrogramInpainter,
+    stft_config:      STFTConfig,           # still needed for checkpoint saving
+    model_config:     ModelConfig,
+    preprocessed_dir: str,                  # replaces wav_dir
+    n_epochs:         int   = 50,
+    batch_size:       int   = 32,
+    lr:               float = 3e-4,
+    checkpoint_dir:   str   = './checkpoints',
+    resume_from:      str   = None,
 ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on {device}")
@@ -49,8 +50,11 @@ def train(
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    train_dataset = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='train')
-    val_dataset   = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='val')
+    # train_dataset = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='train')
+    # val_dataset   = VCTKInpaintingDataset(wav_dir, stft_config, model_config, split='val')
+
+    train_dataset = VCTKInpaintingDataset(preprocessed_dir, model_config, split='train')
+    val_dataset   = VCTKInpaintingDataset(preprocessed_dir, model_config, split='val')
 
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
@@ -169,16 +173,20 @@ if __name__ == '__main__':
     model_config = ModelConfig()
     model        = SpectrogramInpainter(model_config)
 
-    VCTK_WAV_DIR = "/root/.cache/kagglehub/datasets/pratt3000/vctk-corpus/versions/1/VCTK-Corpus/VCTK-Corpus/wav48"
+    VCTK_WAV_DIR = "./.cache/kagglehub/datasets/pratt3000/vctk-corpus/versions/1/VCTK-Corpus/VCTK-Corpus/wav48"
+    PREPROCESSED_DIR = "./vctk_preprocessed"
+
+    # Run once — safe to re-run, skips already-cached files
+    preprocess_dataset(VCTK_WAV_DIR, PREPROCESSED_DIR, STFTConfig())
 
     train(
-        model=model,
-        stft_config=stft_config,
-        model_config=model_config,
-        wav_dir=VCTK_WAV_DIR,
-        n_epochs=50,
-        batch_size=32,
-        lr=3e-4,
-        checkpoint_dir='./checkpoints',
-        resume_from=None,   # set to './checkpoints/latest.pt' to resume
-    )
+    model            = model,
+    stft_config      = stft_config,
+    model_config     = model_config,
+    preprocessed_dir = PREPROCESSED_DIR,   # replaces wav_dir=VCTK_WAV_DIR
+    n_epochs         = 50,
+    batch_size       = 32,
+    lr               = 3e-4,
+    checkpoint_dir   = './checkpoints',
+    resume_from      = None,
+)

@@ -4,8 +4,24 @@ import torch
 import soundfile as sf
 from pathlib import Path
 from model_config import ModelConfig  # adjust import to match your file structure
-from STFT import STFTConfig, load_audio
+from STFT import STFTConfig, load_audio, compute_stft, compute_log_magnitude, get_frame_indices_for_samples, log_magnitude_to_magnitude, istft
 from spectrogram_inpainter import SpectrogramInpainter
+from preprocess import induce_clipping, clip_detection
+
+
+def reconstruct_audio_sample_precise(
+    restored_audio: np.ndarray,
+    clipped_audio:  np.ndarray,
+    clip_events:    list[tuple[int, int]],
+) -> np.ndarray:
+    """
+    Splice model output back at exact clipped sample positions only.
+    All other samples are taken directly from clipped_audio.
+    """
+    output = clipped_audio.copy()
+    for sample_start, sample_end in clip_events:
+        output[sample_start : sample_end + 1] = restored_audio[sample_start : sample_end + 1]
+    return output
 
 
 def propagate_phase_bidirectional(stft, mask_start, mask_end, hop, fft_size):
@@ -228,6 +244,12 @@ def test(
     sf.write(original_out, clean_audio,   sr)
     sf.write(clipped_out,  clipped_audio, sr)
     sf.write(restored_out, output_audio,  sr)
+
+    sample_precise_audio = reconstruct_audio_sample_precise(output_audio, clipped_audio, clip_events)
+
+    precise_out = output_path / f"{stem}_restored_precise.wav"
+    sf.write(precise_out, sample_precise_audio, sr)
+    print(f"  Precise  : {precise_out}")
 
     print(f"\nSaved:")
     print(f"  Original : {original_out}")
